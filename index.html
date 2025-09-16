@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Planck.js Platformer</title>
+    <link rel="stylesheet" href="style.css">
+    <!-- Load Planck.js from a CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/planck-js@0.3.31/dist/planck.js"></script>
+</head>
+<body>
+    <div id="game-container">
+        <div id="hud">
+            <div class="player-hud">
+                <span>P1 SCORE</span>
+                <span id="p1-score">000000</span>
+                <span>COINS</span>
+                <span id="p1-coins">00</span>
+                <span>LIVES</span>
+                <span id="p1-lives">3</span>
+            </div>
+            <div class="timer-hud">
+                <span>TIME</span>
+                <span id="timer">400</span>
+            </div>
+            <div class="player-hud">
+                <span>P2 SCORE</span>
+                <span id="p2-score">000000</span>
+                <span>COINS</span>
+                <span id="p2-coins">00</span>
+                <span>LIVES</span>
+                <span id="p2-lives">3</span>
+            </div>
+        </div>
+        <canvas id="gameCanvas"></canvas>
+    </div>
+    <script src="script.js"></script>
+</body>
+</html>

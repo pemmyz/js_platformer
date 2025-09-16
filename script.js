@@ -1,0 +1,229 @@
+// IIFE to encapsulate game logic
+(function() {
+    // --- PHYSICS CONSTANTS ---
+    const PPM = 32;
+    const GRAVITY = -20;
+    const TIME_STEP = 1 / 60;
+    const MAX_VELOCITY = 8;
+    const MOVE_FORCE = 35.0;
+    const JUMP_IMPULSE = 19.5;     // <-- INCREASED JUMP IMPULSE (3x) from 6.5
+    const PLAYER_DAMPING = 2.0;
+
+    // Planck.js alias
+    const pl = planck;
+    const Vec2 = pl.Vec2;
+
+    // Canvas & Context
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    canvas.width = 800;
+    canvas.height = 450;
+
+    // Physics World
+    const world = pl.World({ gravity: Vec2(0, GRAVITY) });
+
+    // Game State
+    let players = [];
+    let enemies = [];
+    let blocks = [];
+    let powerups = [];
+    let gameTime = 400;
+    let gameOver = false;
+    let lastTime = 0;
+
+    // Input State
+    const keys = {};
+    window.addEventListener('keydown', (e) => keys[e.code] = true);
+    window.addEventListener('keyup', (e) => keys[e.code] = false);
+
+    // --- UTILITY FUNCTIONS ---
+    const m2p = (m) => m * PPM;
+    const p2m = (p) => p / PPM;
+    const formatNumber = (num, length) => String(num).padStart(length, '0');
+
+    // --- CAMERA ---
+    const camera = {
+        x: 0,
+        y: 0,
+        width: canvas.width,
+        height: canvas.height,
+        update: function() {
+            if (players.length === 0) return;
+            let totalX = 0;
+            players.forEach(p => totalX += p.body.getPosition().x);
+            const avgX = totalX / players.length;
+            let targetX = m2p(avgX) - this.width / 2;
+            this.x += (targetX - this.x) * 0.1;
+            const levelWidth = levelData[0].length * 32;
+            if (this.x < 0) this.x = 0;
+            if (this.x > levelWidth - this.width) this.x = levelWidth - this.width;
+        }
+    };
+
+    // --- CLASSES ---
+
+    // Player Class
+    class Player {
+        constructor(world, x, y, playerNumber) {
+            this.playerNumber = playerNumber;
+            this.width = p2m(26);
+            this.height = p2m(28);
+            this.body = world.createDynamicBody({
+                position: Vec2(x, y),
+                fixedRotation: true,
+                allowSleep: false,
+                linearDamping: PLAYER_DAMPING,
+            });
+
+            this.body.createFixture(pl.Box(this.width / 2, this.height / 2), {
+                density: 1.0,
+                friction: 0.9,
+            });
+            
+            this.body.setUserData({type: 'player', player: this});
+
+            this.jumpCooldown = 0;
+            this.score = 0;
+            this.coins = 0;
+            this.lives = 3;
+            this.isBig = false;
+        }
+
+        isGrounded() {
+            const pos = this.body.getPosition();
+            const groundRayStart = Vec2(pos.x, pos.y);
+            const groundRayEnd = Vec2(pos.x, pos.y - this.height / 2 - p2m(1));
+            let isGrounded = false;
+            world.rayCast(groundRayStart, groundRayEnd, (fixture) => {
+                const userData = fixture.getBody().getUserData();
+                if (userData && (userData.type === 'ground' || userData.type === 'block')) {
+                    isGrounded = true;
+                    return 0;
+                }
+                return -1;
+            });
+            return isGrounded;
+        }
+
+        tryJump() {
+            if (this.isGrounded() && this.jumpCooldown === 0) {
+                this.body.applyLinearImpulse(Vec2(0, JUMP_IMPULSE), this.body.getWorldCenter(), true);
+                this.jumpCooldown = 0.2;
+            }
+        }
+
+        update(dt) {
+            this.jumpCooldown = Math.max(0, this.jumpCooldown - dt);
+            
+            if (this.playerNumber === 1) { // Player 1 Controls (Arrows)
+                if (keys['ArrowLeft']) this.body.applyForceToCenter(Vec2(-MOVE_FORCE, 0), true);
+                if (keys['ArrowRight']) this.body.applyForceToCenter(Vec2(MOVE_FORCE, 0), true);
+                if (keys['ArrowUp']) this.tryJump();
+            } else if (this.playerNumber === 2) { // Player 2 Controls (WASD)
+                if (keys['KeyA']) this.body.applyForceToCenter(Vec2(-MOVE_FORCE, 0), true);
+                if (keys['KeyD']) this.body.applyForceToCenter(Vec2(MOVE_FORCE, 0), true);
+                if (keys['KeyW']) this.tryJump();
+            }
+             
+            const vel = this.body.getLinearVelocity();
+            if (Math.abs(vel.x) > MAX_VELOCITY) {
+                vel.x = Math.sign(vel.x) * MAX_VELOCITY;
+                this.body.setLinearVelocity(vel);
+            }
+        }
+
+        render(ctx) {
+            const pos = this.body.getPosition();
+            const x = m2p(pos.x);
+            const y = canvas.height - m2p(pos.y); 
+            ctx.fillStyle = this.playerNumber === 1 ? 'red' : '#000080';
+            ctx.fillRect(x - m2p(this.width/2), y - m2p(this.height/2), m2p(this.width), m2p(this.height));
+        }
+
+        die() {
+            this.lives--;
+            if (this.lives <= 0) console.log(`Player ${this.playerNumber} is out of lives!`);
+            else {
+                this.body.setPosition(Vec2(4, 5));
+                this.body.setLinearVelocity(Vec2(0,0));
+            }
+        }
+
+        addScore(points) { this.score += points; }
+        addCoin() {
+            this.coins++;
+            this.addScore(200);
+            if (this.coins >= 100) {
+                this.coins = 0;
+                this.lives++;
+            }
+        }
+    }
+
+    // --- (Enemy, Block, PowerUp classes are unchanged) ---
+
+    class Enemy {
+        constructor(world, x, y) {
+            this.width = p2m(32); this.height = p2m(32);
+            this.body = world.createDynamicBody({ position: Vec2(x, y), fixedRotation: true });
+            this.body.createFixture(pl.Box(this.width / 2, this.height / 2), { density: 0.5, friction: 0.1 });
+            this.body.setUserData({ type: 'enemy', enemy: this });
+            this.speed = 2; this.direction = -1; this.isStomped = false; this.stompTime = 0;
+        }
+        update(dt) {
+            if (this.isStomped) { this.stompTime += dt; if(this.stompTime > 0.5) { world.destroyBody(this.body); enemies = enemies.filter(e => e !== this); } return; }
+            this.body.setLinearVelocity(Vec2(this.speed * this.direction, this.body.getLinearVelocity().y));
+            const currentPos = this.body.getPosition(); const probeX = currentPos.x + (this.direction * (this.width / 2 + p2m(1))); const probeY = currentPos.y - (this.height / 2 + p2m(1));
+            let groundAhead = false;
+            world.queryAABB(pl.AABB(Vec2(probeX, probeY), Vec2(probeX, probeY)), (fixture) => { const userData = fixture.getBody().getUserData(); if (userData && (userData.type === 'ground' || userData.type === 'block')) groundAhead = true; return true; });
+            if (!groundAhead) this.direction *= -1;
+        }
+        stomp() { if(this.isStomped) return; this.isStomped = true; this.body.destroyFixture(this.body.getFixtureList()); this.body.createFixture(pl.Box(this.width / 2, this.height / 4, Vec2(0, -this.height / 4)), {}); this.body.setLinearVelocity(Vec2(0,0)); }
+        render(ctx) { const pos = this.body.getPosition(); const x = m2p(pos.x); const y = canvas.height - m2p(pos.y); ctx.fillStyle = this.isStomped ? '#754719' : '#d2691e'; ctx.fillRect(x - m2p(this.width/2), y - m2p(this.height/2), m2p(this.width), this.isStomped ? m2p(this.height/2) : m2p(this.height)); }
+    }
+
+    class Block {
+        constructor(world, x, y, type) { this.type = type; this.initialPos = Vec2(x, y); this.width = p2m(32); this.height = p2m(32); this.body = world.createBody({ position: this.initialPos }); this.body.createFixture(pl.Box(this.width / 2, this.height / 2)); this.body.setUserData({ type: 'block', block: this }); this.isHit = false; }
+        hit(player) { if (this.type === 'question' && !this.isHit) { this.isHit = true; const coin = new PowerUp(world, this.initialPos.x, this.initialPos.y + p2m(32), 'coin'); powerups.push(coin); coin.body.applyLinearImpulse(Vec2(0, 8), coin.body.getWorldCenter()); player.addCoin(); } }
+        render(ctx) { const pos = this.body.getPosition(); const x = m2p(pos.x); const y = canvas.height - m2p(pos.y); if (this.type === 'ground') ctx.fillStyle = '#228B22'; else if (this.type === 'brick') ctx.fillStyle = '#B22222'; else if (this.type === 'solid') ctx.fillStyle = '#0000FF'; else if (this.type === 'question') ctx.fillStyle = this.isHit ? '#D3D3D3' : '#FFFFFF'; ctx.fillRect(x - m2p(this.width/2), y - m2p(this.height/2), m2p(this.width), m2p(this.height)); }
+    }
+    
+    class PowerUp {
+        constructor(world, x, y, type){ this.type = type; this.width = p2m(24); this.height = p2m(24); this.body = world.createDynamicBody({ position: Vec2(x,y) }); this.body.createFixture(pl.Circle(this.width/2), {isSensor: true}); this.body.setUserData({type: 'powerup', powerup: this}); this.collected = false; }
+        render(ctx) { const pos = this.body.getPosition(); const x = m2p(pos.x); const y = canvas.height - m2p(pos.y); ctx.fillStyle = 'yellow'; ctx.beginPath(); ctx.arc(x, y, m2p(this.width/2), 0, Math.PI * 2); ctx.fill(); }
+        collect() { if (this.collected) return; this.collected = true; world.destroyBody(this.body); powerups = powerups.filter(p => p !== this); }
+    }
+
+    // --- LEVEL PARSING (unchanged) ---
+    const levelData = [ "                                        ", "                                        ", "                                        ", "                                        ", "                                        ", "    ?#?#                                ", "                                        ", "                E         E             ", "       #####         ####               ", "                                        ", "              E   E                     ", "   ?##?      #####                      ", "                                        ", "GGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG", "SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS" ];
+    function parseLevel() {
+        for (let r = 0; r < levelData.length; r++) { for (let c = 0; c < levelData[r].length; c++) { const char = levelData[r][c]; const x = c * p2m(32) + p2m(16); const y = (levelData.length - 1 - r) * p2m(32) + p2m(16); let block; if (char === 'G') block = new Block(world, x, y, 'ground'); else if (char === 'S') block = new Block(world, x, y, 'solid'); else if (char === '#') block = new Block(world, x, y, 'brick'); else if (char === '?') block = new Block(world, x, y, 'question'); else if (char === 'E') enemies.push(new Enemy(world, x, y)); if (block) { block.body.setStatic(); blocks.push(block); } } }
+    }
+    
+    // --- COLLISION HANDLING (unchanged) ---
+    world.on('begin-contact', (contact) => handleContact(contact.getFixtureA(), contact.getFixtureB(), true));
+    function handleContact(fixtureA, fixtureB, isBeginning) {
+        const dataA = fixtureA.getUserData() || {}; const dataB = fixtureB.getUserData() || {}; const pairs = [ { a: dataA, b: dataB }, { a: dataB, b: dataA } ];
+        for (const pair of pairs) {
+            if (isBeginning && pair.a.type === 'player' && pair.b.type === 'enemy') { const player = pair.a.player, enemy = pair.b.enemy; if (player.body.getPosition().y > enemy.body.getPosition().y + p2m(12) && player.body.getLinearVelocity().y < 0) { enemy.stomp(); player.addScore(100); const vel = player.body.getLinearVelocity(); player.body.setLinearVelocity(Vec2(vel.x, 0)); player.body.applyLinearImpulse(Vec2(0, JUMP_IMPULSE / 1.5), player.body.getWorldCenter(), true); } else if (!enemy.isStomped) player.die(); }
+            else if (isBeginning && pair.a.type === 'player' && pair.b.type === 'block') { if (pair.a.player.body.getPosition().y < pair.b.block.body.getPosition().y - p2m(16)) { pair.b.block.hit(pair.a.player); } }
+            else if (isBeginning && pair.a.type === 'player' && pair.b.type === 'powerup') { pair.b.powerup.collect(); }
+        }
+    }
+
+    // --- MAIN GAME LOOP (unchanged) ---
+    function gameLoop(currentTime) { if (gameOver) return; requestAnimationFrame(gameLoop); const dt = (currentTime - lastTime) / 1000; lastTime = currentTime; gameTime = Math.max(0, gameTime - dt); players.forEach(p => p.update(dt)); enemies.forEach(e => e.update(dt)); camera.update(); world.step(TIME_STEP); render(); }
+
+    // --- RENDER FUNCTION (unchanged) ---
+    function render() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height); ctx.save(); ctx.translate(-camera.x, 0); blocks.forEach(b => b.render(ctx)); enemies.forEach(e => e.render(ctx)); powerups.forEach(p => p.render(ctx)); players.forEach(p => p.render(ctx)); ctx.restore();
+        if (players[0]) { document.getElementById('p1-score').textContent = formatNumber(players[0].score, 6); document.getElementById('p1-coins').textContent = formatNumber(players[0].coins, 2); document.getElementById('p1-lives').textContent = players[0].lives; }
+        if (players[1]) { document.getElementById('p2-score').textContent = formatNumber(players[1].score, 6); document.getElementById('p2-coins').textContent = formatNumber(players[1].coins, 2); document.getElementById('p2-lives').textContent = players[1].lives; }
+        document.getElementById('timer').textContent = Math.ceil(gameTime);
+    }
+
+    // --- INITIALIZATION (unchanged) ---
+    function init() { parseLevel(); players.push(new Player(world, 2, 5, 1)); players.push(new Player(world, 3, 5, 2)); lastTime = performance.now(); requestAnimationFrame(gameLoop); }
+
+    init();
+})();
