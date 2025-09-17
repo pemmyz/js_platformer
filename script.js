@@ -6,7 +6,7 @@
     const TIME_STEP = 1 / 60;
     const MAX_VELOCITY = 8;
     const MOVE_FORCE = 35.0;
-    const JUMP_IMPULSE = 19.5;     // <-- INCREASED JUMP IMPULSE (3x) from 6.5
+    const JUMP_IMPULSE = 19.5;
     const PLAYER_DAMPING = 2.0;
 
     // Planck.js alias
@@ -30,6 +30,7 @@
     let gameTime = 400;
     let gameOver = false;
     let lastTime = 0;
+    let levelWidthInPixels = 0;
 
     // Input State
     const keys = {};
@@ -54,15 +55,78 @@
             const avgX = totalX / players.length;
             let targetX = m2p(avgX) - this.width / 2;
             this.x += (targetX - this.x) * 0.1;
-            const levelWidth = levelData[0].length * 32;
+            
             if (this.x < 0) this.x = 0;
-            if (this.x > levelWidth - this.width) this.x = levelWidth - this.width;
+            if (levelWidthInPixels > this.width && this.x > levelWidthInPixels - this.width) {
+                this.x = levelWidthInPixels - this.width;
+            }
         }
     };
 
-    // --- CLASSES ---
+    // --- ORIGINAL HARD-CODED LEVEL DATA ---
+    const originalLevelData = [ 
+        "                                        ", 
+        "                                        ", 
+        "                                        ", 
+        "                                        ", 
+        "                                        ", 
+        "    ?#?#                                ", 
+        "                                        ", 
+        "                E         E             ", 
+        "       #####         ####               ", 
+        "                                        ", 
+        "              E   E                     ", 
+        "   ?##?      #####                      ", 
+        "                                        ", 
+        "GGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG", 
+        "SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS" 
+    ];
 
-    // Player Class
+    // --- NEW PROCEDURAL PLATFORM GENERATOR ---
+    const RandomPlatformGenerator = {
+        generateLevelData(levelWidth, levelHeight, platformCount) {
+            // 1. Create an empty grid
+            const levelMap = Array.from({ length: levelHeight }, () => Array(levelWidth).fill(' '));
+
+            // 2. Add solid ground at the bottom
+            for (let c = 0; c < levelWidth; c++) {
+                levelMap[levelHeight - 2][c] = 'G'; // Green ground
+                levelMap[levelHeight - 1][c] = 'S'; // Solid invisible block
+            }
+
+            // 3. Place random platforms
+            for (let i = 0; i < platformCount; i++) {
+                const platWidth = Math.floor(Math.random() * 6) + 2; // Random width 2 to 7
+                const platX = Math.floor(Math.random() * (levelWidth - platWidth));
+                const platY = Math.floor(Math.random() * (levelHeight - 5)) + 2; // Avoid top and bottom rows
+
+                const platType = Math.random() > 0.3 ? '#' : '?'; // 70% brick, 30% question
+
+                for (let j = 0; j < platWidth; j++) {
+                    levelMap[platY][platX + j] = platType;
+                }
+            }
+            
+            // 4. Place enemies on top of platforms
+            const enemyDensity = 0.1; // 10% chance to spawn on a platform block
+            for (let r = 1; r < levelHeight - 2; r++) {
+                for (let c = 0; c < levelWidth; c++) {
+                    const tileBelow = levelMap[r+1][c];
+                    const currentTile = levelMap[r][c];
+
+                    if(currentTile === ' ' && (tileBelow === '#' || tileBelow === '?')) {
+                        if (Math.random() < enemyDensity) {
+                            levelMap[r][c] = 'E';
+                        }
+                    }
+                }
+            }
+
+            return levelMap;
+        }
+    };
+
+    // --- CLASSES (Player, Enemy, Block, PowerUp are unchanged) ---
     class Player {
         constructor(world, x, y, playerNumber) {
             this.playerNumber = playerNumber;
@@ -159,9 +223,7 @@
             }
         }
     }
-
-    // --- (Enemy, Block, PowerUp classes are unchanged) ---
-
+    
     class Enemy {
         constructor(world, x, y) {
             this.width = p2m(32); this.height = p2m(32);
@@ -194,13 +256,38 @@
         collect() { if (this.collected) return; this.collected = true; world.destroyBody(this.body); powerups = powerups.filter(p => p !== this); }
     }
 
-    // --- LEVEL PARSING (unchanged) ---
-    const levelData = [ "                                        ", "                                        ", "                                        ", "                                        ", "                                        ", "    ?#?#                                ", "                                        ", "                E         E             ", "       #####         ####               ", "                                        ", "              E   E                     ", "   ?##?      #####                      ", "                                        ", "GGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG", "SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS" ];
-    function parseLevel() {
-        for (let r = 0; r < levelData.length; r++) { for (let c = 0; c < levelData[r].length; c++) { const char = levelData[r][c]; const x = c * p2m(32) + p2m(16); const y = (levelData.length - 1 - r) * p2m(32) + p2m(16); let block; if (char === 'G') block = new Block(world, x, y, 'ground'); else if (char === 'S') block = new Block(world, x, y, 'solid'); else if (char === '#') block = new Block(world, x, y, 'brick'); else if (char === '?') block = new Block(world, x, y, 'question'); else if (char === 'E') enemies.push(new Enemy(world, x, y)); if (block) { block.body.setStatic(); blocks.push(block); } } }
+    // --- LEVEL PARSING ---
+    function parseLevel(levelData) {
+        levelWidthInPixels = levelData[0].length * 32;
+        const levelHeightInTiles = levelData.length;
+
+        for (let r = 0; r < levelData.length; r++) { 
+            for (let c = 0; c < levelData[r].length; c++) { 
+                const char = levelData[r][c]; 
+                const x = c * p2m(32) + p2m(16); 
+                const y = (levelHeightInTiles - 1 - r) * p2m(32) + p2m(16);
+                
+                let block; 
+                if (char === 'G') block = new Block(world, x, y, 'ground'); 
+                else if (char === 'S') block = new Block(world, x, y, 'solid'); 
+                else if (char === '#') block = new Block(world, x, y, 'brick'); 
+                else if (char === '?') block = new Block(world, x, y, 'question'); 
+                else if (char === 'E') enemies.push(new Enemy(world, x, y)); 
+
+                if (block) { 
+                    block.body.setStatic(); 
+                    if (char === 'G' || char === '#' || char === 'S') {
+                         block.body.setUserData({ type: 'ground', block: block });
+                    } else {
+                         block.body.setUserData({ type: 'block', block: block });
+                    }
+                    blocks.push(block); 
+                } 
+            } 
+        }
     }
     
-    // --- COLLISION HANDLING (unchanged) ---
+    // --- COLLISION HANDLING ---
     world.on('begin-contact', (contact) => handleContact(contact.getFixtureA(), contact.getFixtureB(), true));
     function handleContact(fixtureA, fixtureB, isBeginning) {
         const dataA = fixtureA.getUserData() || {}; const dataB = fixtureB.getUserData() || {}; const pairs = [ { a: dataA, b: dataB }, { a: dataB, b: dataA } ];
@@ -211,19 +298,73 @@
         }
     }
 
-    // --- MAIN GAME LOOP (unchanged) ---
+    // --- MAIN GAME LOOP ---
     function gameLoop(currentTime) { if (gameOver) return; requestAnimationFrame(gameLoop); const dt = (currentTime - lastTime) / 1000; lastTime = currentTime; gameTime = Math.max(0, gameTime - dt); players.forEach(p => p.update(dt)); enemies.forEach(e => e.update(dt)); camera.update(); world.step(TIME_STEP); render(); }
 
-    // --- RENDER FUNCTION (unchanged) ---
+    // --- RENDER FUNCTION ---
     function render() {
         ctx.clearRect(0, 0, canvas.width, canvas.height); ctx.save(); ctx.translate(-camera.x, 0); blocks.forEach(b => b.render(ctx)); enemies.forEach(e => e.render(ctx)); powerups.forEach(p => p.render(ctx)); players.forEach(p => p.render(ctx)); ctx.restore();
         if (players[0]) { document.getElementById('p1-score').textContent = formatNumber(players[0].score, 6); document.getElementById('p1-coins').textContent = formatNumber(players[0].coins, 2); document.getElementById('p1-lives').textContent = players[0].lives; }
         if (players[1]) { document.getElementById('p2-score').textContent = formatNumber(players[1].score, 6); document.getElementById('p2-coins').textContent = formatNumber(players[1].coins, 2); document.getElementById('p2-lives').textContent = players[1].lives; }
         document.getElementById('timer').textContent = Math.ceil(gameTime);
     }
+    
+    // --- GAME START & MENU LOGIC ---
+    function startGame(mapType) {
+        // 1. Remove the menu
+        const menu = document.getElementById('start-menu');
+        if (menu) menu.remove();
 
-    // --- INITIALIZATION (unchanged) ---
-    function init() { parseLevel(); players.push(new Player(world, 2, 5, 1)); players.push(new Player(world, 3, 5, 2)); lastTime = performance.now(); requestAnimationFrame(gameLoop); }
+        // 2. Generate the level data based on choice
+        let levelData;
+        if (mapType === 'original') {
+            levelData = originalLevelData;
+        } else {
+            // Generate a level 200 tiles wide, 30 tiles high, with 150 platforms
+            levelData = RandomPlatformGenerator.generateLevelData(200, 30, 150);
+        }
+
+        // 3. Parse the data to create game objects
+        parseLevel(levelData);
+        
+        // 4. Create players
+        players.push(new Player(world, 4, 5, 1));
+        players.push(new Player(world, 5, 5, 2));
+
+        // 5. Start the game loop
+        lastTime = performance.now(); 
+        requestAnimationFrame(gameLoop); 
+    }
+
+    function showStartMenu() {
+        const gameContainer = document.getElementById('game-container');
+        
+        const menu = document.createElement('div');
+        menu.id = 'start-menu';
+
+        const title = document.createElement('h1');
+        title.textContent = 'Planck.js Platformer';
+        
+        const originalButton = document.createElement('button');
+        originalButton.textContent = 'Original Map';
+        originalButton.onclick = () => startGame('original');
+
+        const proceduralButton = document.createElement('button');
+        proceduralButton.textContent = 'Procedural Map';
+        proceduralButton.onclick = () => startGame('procedural');
+
+        menu.appendChild(title);
+        menu.appendChild(originalButton);
+        menu.appendChild(proceduralButton);
+
+        gameContainer.appendChild(menu);
+    }
+
+    // --- INITIALIZATION ---
+    function init() {
+        showStartMenu();
+    }
 
     init();
+
 })();
