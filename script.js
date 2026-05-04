@@ -31,6 +31,8 @@
     let gameOver = false;
     let lastTime = 0;
     let levelWidthInPixels = 0;
+    let isProceduralMode = false;
+    let maxGeneratedCol = 0;
 
     // Input State
     const keys = {};
@@ -53,11 +55,15 @@
             let totalX = 0;
             players.forEach(p => totalX += p.body.getPosition().x);
             const avgX = totalX / players.length;
-            let targetX = m2p(avgX) - this.width / 2;
+            
+            // Keep player 1/3rd from the left side of the screen
+            let targetX = m2p(avgX) - this.width / 3; 
             this.x += (targetX - this.x) * 0.1;
             
             if (this.x < 0) this.x = 0;
-            if (levelWidthInPixels > this.width && this.x > levelWidthInPixels - this.width) {
+            
+            // If playing the original finite map, clamp the camera to the end
+            if (!isProceduralMode && levelWidthInPixels > this.width && this.x > levelWidthInPixels - this.width) {
                 this.x = levelWidthInPixels - this.width;
             }
         }
@@ -82,51 +88,122 @@
         "SSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSSS" 
     ];
 
-    // --- NEW PROCEDURAL PLATFORM GENERATOR ---
-    const RandomPlatformGenerator = {
-        generateLevelData(levelWidth, levelHeight, platformCount) {
-            // 1. Create an empty grid
-            const levelMap = Array.from({ length: levelHeight }, () => Array(levelWidth).fill(' '));
+    // --- INFINITE PROCEDURAL GENERATOR & GC ---
+    const ChunkGenerator = {
+        lastPlatY: p2m(96), // Tracks the height of the last generated platform
+        
+        generateProceduralChunk() {
+            const startCol = maxGeneratedCol;
+            const endCol = startCol + 40; // Generate 40 tiles wide at a time
+            
+            // ------------------------------------------------
+            // PASS 1: GROUND & PITS
+            // ------------------------------------------------
+            let c = startCol;
+            while (c < endCol) {
+                // First 15 blocks of the game are safe, then 12% pit chance
+                let isPit = (c > 15) && (Math.random() < 0.12); 
+                let pitWidth = isPit ? Math.floor(Math.random() * 3) + 2 : 0; // 2 to 4 blocks wide pit
 
-            // 2. Add solid ground at the bottom
-            for (let c = 0; c < levelWidth; c++) {
-                levelMap[levelHeight - 2][c] = 'G'; // Green ground
-                levelMap[levelHeight - 1][c] = 'S'; // Solid invisible block
-            }
-
-            // 3. Place random platforms
-            for (let i = 0; i < platformCount; i++) {
-                const platWidth = Math.floor(Math.random() * 6) + 2; // Random width 2 to 7
-                const platX = Math.floor(Math.random() * (levelWidth - platWidth));
-                const platY = Math.floor(Math.random() * (levelHeight - 5)) + 2; // Avoid top and bottom rows
-
-                const platType = Math.random() > 0.3 ? '#' : '?'; // 70% brick, 30% question
-
-                for (let j = 0; j < platWidth; j++) {
-                    levelMap[platY][platX + j] = platType;
+                if (isPit) {
+                    c += pitWidth; // Skip ground generation to create a pit
+                } else {
+                    let x = c * p2m(32) + p2m(16);
+                    let bG = new Block(world, x, p2m(48), 'ground'); 
+                    bG.body.setStatic(); bG.body.setUserData({type: 'ground', block: bG}); blocks.push(bG);
+                    
+                    let bS = new Block(world, x, p2m(16), 'solid'); 
+                    bS.body.setStatic(); bS.body.setUserData({type: 'ground', block: bS}); blocks.push(bS);
+                    
+                    // Sometimes spawn an enemy on the ground
+                    if (Math.random() < 0.05) {
+                        enemies.push(new Enemy(world, x, p2m(80)));
+                    }
+                    c++;
                 }
             }
-            
-            // 4. Place enemies on top of platforms
-            const enemyDensity = 0.1; // 10% chance to spawn on a platform block
-            for (let r = 1; r < levelHeight - 2; r++) {
-                for (let c = 0; c < levelWidth; c++) {
-                    const tileBelow = levelMap[r+1][c];
-                    const currentTile = levelMap[r][c];
 
-                    if(currentTile === ' ' && (tileBelow === '#' || tileBelow === '?')) {
-                        if (Math.random() < enemyDensity) {
-                            levelMap[r][c] = 'E';
+            // ------------------------------------------------
+            // PASS 2: PLATFORMS AT VARIOUS HEIGHTS
+            // ------------------------------------------------
+            let pCol = startCol + Math.floor(Math.random() * 5) + 3; // Start a bit into the chunk
+            
+            while (pCol < endCol) {
+                // Shift height gradually so it's always reachable (-3 to +3 blocks from last platform)
+                let yShift = (Math.floor(Math.random() * 7) - 3) * p2m(32); 
+                let newY = this.lastPlatY + yShift;
+                
+                // Clamp platform heights: 
+                // Min 112px (above ground), Max 350px (near top of screen)
+                newY = Math.max(p2m(112), Math.min(newY, p2m(350)));
+                this.lastPlatY = newY;
+
+                const platWidth = Math.floor(Math.random() * 4) + 3; // 3 to 6 blocks wide
+                let hasEnemy = Math.random() < 0.4; // 40% chance of an enemy per platform
+
+                // Create main platform
+                for (let j = 0; j < platWidth; j++) {
+                    let platX = (pCol + j) * p2m(32) + p2m(16);
+                    let platType = (Math.random() < 0.25) ? 'question' : 'brick';
+                    
+                    let bP = new Block(world, platX, newY, platType);
+                    bP.body.setStatic(); bP.body.setUserData({type: 'block', block: bP}); blocks.push(bP);
+
+                    // Place enemy in the center
+                    if (hasEnemy && j === Math.floor(platWidth / 2)) {
+                        enemies.push(new Enemy(world, platX, newY + p2m(32)));
+                        hasEnemy = false;
+                    }
+                }
+
+                // Occasional Secondary Stacked Platform (Higher or Lower)
+                if (Math.random() < 0.45) {
+                    // 3 blocks above or 3 blocks below the main platform
+                    let secondaryY = newY + (Math.random() > 0.5 ? p2m(96) : -p2m(96));
+                    
+                    if (secondaryY >= p2m(112) && secondaryY <= p2m(350)) {
+                        let secWidth = Math.max(1, platWidth - 2); // Slightly smaller
+                        let offset = Math.floor(Math.random() * 2);
+                        
+                        for (let j = 0; j < secWidth; j++) {
+                            let secX = (pCol + offset + j) * p2m(32) + p2m(16);
+                            let secType = (Math.random() < 0.3) ? 'question' : 'brick';
+                            
+                            let bP = new Block(world, secX, secondaryY, secType);
+                            bP.body.setStatic(); bP.body.setUserData({type: 'block', block: bP}); blocks.push(bP);
                         }
                     }
                 }
+
+                // Advance platform cursor (leave gap before next platform)
+                let gap = Math.floor(Math.random() * 4) + 2; // 2 to 5 block horizontal gap
+                pCol += platWidth + gap;
             }
 
-            return levelMap;
+            maxGeneratedCol = endCol;
+            gameTime += 20; // Add time for completing chunks so player doesn't run out
         }
     };
 
-    // --- CLASSES (Player, Enemy, Block, PowerUp are unchanged) ---
+    function cleanupWorld() {
+        // Destroy objects that have fallen too far behind the camera
+        const leftBound = p2m(camera.x - 600); 
+        
+        blocks = blocks.filter(b => {
+            if (b.body.getPosition().x < leftBound) { world.destroyBody(b.body); return false; }
+            return true;
+        });
+        enemies = enemies.filter(e => {
+            if (e.body.getPosition().x < leftBound) { world.destroyBody(e.body); return false; }
+            return true;
+        });
+        powerups = powerups.filter(p => {
+            if (p.body.getPosition().x < leftBound) { world.destroyBody(p.body); return false; }
+            return true;
+        });
+    }
+
+    // --- CLASSES ---
     class Player {
         constructor(world, x, y, playerNumber) {
             this.playerNumber = playerNumber;
@@ -194,6 +271,11 @@
                 vel.x = Math.sign(vel.x) * MAX_VELOCITY;
                 this.body.setLinearVelocity(vel);
             }
+            
+            // Pit death recovery
+            if (this.body.getPosition().y < -1) {
+                this.die();
+            }
         }
 
         render(ctx) {
@@ -206,9 +288,14 @@
 
         die() {
             this.lives--;
-            if (this.lives <= 0) console.log(`Player ${this.playerNumber} is out of lives!`);
-            else {
-                this.body.setPosition(Vec2(4, 5));
+            if (this.lives <= 0) {
+                console.log(`Player ${this.playerNumber} is out of lives!`);
+                // Move offscreen temporarily or handle game over
+                this.body.setPosition(Vec2(-100, 5));
+            } else {
+                // Respawn slightly ahead of camera view so they don't get stuck behind
+                const respawnX = p2m(camera.x + camera.width / 2);
+                this.body.setPosition(Vec2(respawnX, 12)); 
                 this.body.setLinearVelocity(Vec2(0,0));
             }
         }
@@ -239,6 +326,11 @@
             let groundAhead = false;
             world.queryAABB(pl.AABB(Vec2(probeX, probeY), Vec2(probeX, probeY)), (fixture) => { const userData = fixture.getBody().getUserData(); if (userData && (userData.type === 'ground' || userData.type === 'block')) groundAhead = true; return true; });
             if (!groundAhead) this.direction *= -1;
+            
+            // Destroy if falls into pit
+            if (this.body.getPosition().y < -1) {
+                world.destroyBody(this.body); enemies = enemies.filter(e => e !== this);
+            }
         }
         stomp() { if(this.isStomped) return; this.isStomped = true; this.body.destroyFixture(this.body.getFixtureList()); this.body.createFixture(pl.Box(this.width / 2, this.height / 4, Vec2(0, -this.height / 4)), {}); this.body.setLinearVelocity(Vec2(0,0)); }
         render(ctx) { const pos = this.body.getPosition(); const x = m2p(pos.x); const y = canvas.height - m2p(pos.y); ctx.fillStyle = this.isStomped ? '#754719' : '#d2691e'; ctx.fillRect(x - m2p(this.width/2), y - m2p(this.height/2), m2p(this.width), this.isStomped ? m2p(this.height/2) : m2p(this.height)); }
@@ -256,7 +348,7 @@
         collect() { if (this.collected) return; this.collected = true; world.destroyBody(this.body); powerups = powerups.filter(p => p !== this); }
     }
 
-    // --- LEVEL PARSING ---
+    // --- LEVEL PARSING (For original map) ---
     function parseLevel(levelData) {
         levelWidthInPixels = levelData[0].length * 32;
         const levelHeightInTiles = levelData.length;
@@ -299,11 +391,43 @@
     }
 
     // --- MAIN GAME LOOP ---
-    function gameLoop(currentTime) { if (gameOver) return; requestAnimationFrame(gameLoop); const dt = (currentTime - lastTime) / 1000; lastTime = currentTime; gameTime = Math.max(0, gameTime - dt); players.forEach(p => p.update(dt)); enemies.forEach(e => e.update(dt)); camera.update(); world.step(TIME_STEP); render(); }
+    function gameLoop(currentTime) { 
+        if (gameOver) return; 
+        requestAnimationFrame(gameLoop); 
+        const dt = (currentTime - lastTime) / 1000; 
+        lastTime = currentTime; 
+        gameTime = Math.max(0, gameTime - dt); 
+        
+        players.forEach(p => p.update(dt)); 
+        enemies.forEach(e => e.update(dt)); 
+        camera.update(); 
+        
+        // Procedural Trigger & Cleanup
+        if (isProceduralMode) {
+            // Generate more when player reaches near end of chunk memory
+            if (camera.x + camera.width + 600 > maxGeneratedCol * 32) {
+                ChunkGenerator.generateProceduralChunk();
+                cleanupWorld();
+            }
+        }
+        
+        world.step(TIME_STEP); 
+        render(); 
+    }
 
     // --- RENDER FUNCTION ---
     function render() {
-        ctx.clearRect(0, 0, canvas.width, canvas.height); ctx.save(); ctx.translate(-camera.x, 0); blocks.forEach(b => b.render(ctx)); enemies.forEach(e => e.render(ctx)); powerups.forEach(p => p.render(ctx)); players.forEach(p => p.render(ctx)); ctx.restore();
+        ctx.clearRect(0, 0, canvas.width, canvas.height); 
+        ctx.save(); 
+        ctx.translate(-camera.x, 0); 
+        
+        blocks.forEach(b => b.render(ctx)); 
+        enemies.forEach(e => e.render(ctx)); 
+        powerups.forEach(p => p.render(ctx)); 
+        players.forEach(p => p.render(ctx)); 
+        
+        ctx.restore();
+        
         if (players[0]) { document.getElementById('p1-score').textContent = formatNumber(players[0].score, 6); document.getElementById('p1-coins').textContent = formatNumber(players[0].coins, 2); document.getElementById('p1-lives').textContent = players[0].lives; }
         if (players[1]) { document.getElementById('p2-score').textContent = formatNumber(players[1].score, 6); document.getElementById('p2-coins').textContent = formatNumber(players[1].coins, 2); document.getElementById('p2-lives').textContent = players[1].lives; }
         document.getElementById('timer').textContent = Math.ceil(gameTime);
@@ -311,27 +435,24 @@
     
     // --- GAME START & MENU LOGIC ---
     function startGame(mapType) {
-        // 1. Remove the menu
         const menu = document.getElementById('start-menu');
         if (menu) menu.remove();
 
-        // 2. Generate the level data based on choice
-        let levelData;
         if (mapType === 'original') {
-            levelData = originalLevelData;
+            isProceduralMode = false;
+            parseLevel(originalLevelData);
         } else {
-            // Generate a level 200 tiles wide, 30 tiles high, with 150 platforms
-            levelData = RandomPlatformGenerator.generateLevelData(200, 30, 150);
+            isProceduralMode = true;
+            maxGeneratedCol = 0;
+            gameTime = 100; // Reset starting time for procedural map
+            ChunkGenerator.lastPlatY = p2m(96); // Reset height cursor
+            ChunkGenerator.generateProceduralChunk();
+            ChunkGenerator.generateProceduralChunk(); // Pad initial distance
         }
 
-        // 3. Parse the data to create game objects
-        parseLevel(levelData);
-        
-        // 4. Create players
-        players.push(new Player(world, 4, 5, 1));
-        players.push(new Player(world, 5, 5, 2));
+        players.push(new Player(world, 4, 10, 1));
+        players.push(new Player(world, 5, 10, 2));
 
-        // 5. Start the game loop
         lastTime = performance.now(); 
         requestAnimationFrame(gameLoop); 
     }
@@ -359,6 +480,82 @@
 
         gameContainer.appendChild(menu);
     }
+
+    // --- MOBILE CONTROLS & FULLSCREEN ---
+    const mobileToggleBtn = document.getElementById('mobile-btn');
+    const mobileControls = document.getElementById('mobile-controls');
+    const mobileLeftBtn = document.getElementById('mobile-left');
+    const mobileRightBtn = document.getElementById('mobile-right');
+    const mobileUpBtn = document.getElementById('mobile-up');
+    const screenElement = document.getElementById("screen");
+
+    function scaleGame() {
+        const isFullscreen = document.fullscreenElement || document.webkitFullscreenElement;
+        if (isFullscreen) {
+            const baseWidth = 800;
+            const baseHeight = 450;
+            
+            // Calculate scale to fit window while keeping aspect ratio perfect
+            const scale = Math.min(
+                window.innerWidth / baseWidth,
+                window.innerHeight / baseHeight
+            );
+            
+            screenElement.style.transform = `scale(${scale})`;
+            document.body.classList.add('mobile-mode');
+        } else {
+            screenElement.style.transform = 'none'; 
+            document.body.classList.remove('mobile-mode');
+        }
+    }
+
+    function goFull() {
+        const el = document.documentElement;
+        if (el.requestFullscreen) el.requestFullscreen();
+        else if (el.webkitRequestFullscreen) el.webkitRequestFullscreen();
+    }
+
+    window.addEventListener("resize", scaleGame);
+    window.addEventListener("fullscreenchange", scaleGame);
+    window.addEventListener("webkitfullscreenchange", scaleGame);
+    scaleGame();
+    if(mobileToggleBtn) {
+        mobileToggleBtn.addEventListener('click', goFull);
+    }
+
+    function setupMobileControls() {
+        if (!mobileControls) return;
+        
+        // Maps touch buttons directly into the primary keyboard listener keys list
+        const addControlListener = (element, key) => {
+            if(!element) return;
+            const pressKey = (e) => {
+                if(e.cancelable) e.preventDefault(); 
+                keys[key] = true;
+            };
+            const releaseKey = (e) => {
+                if(e.cancelable) e.preventDefault();
+                keys[key] = false;
+            };
+
+            element.addEventListener('touchstart', pressKey, { passive: false });
+            element.addEventListener('touchend', releaseKey, { passive: false });
+            element.addEventListener('touchcancel', releaseKey, { passive: false });
+            
+            // Allow clicking with mouse for easy desktop testing
+            element.addEventListener('mousedown', pressKey);
+            element.addEventListener('mouseup', releaseKey);
+            element.addEventListener('mouseleave', (e) => {
+                if (e.buttons === 1) { releaseKey(e); }
+            });
+        };
+
+        // Mapped to Player 1 Arrow Controls
+        addControlListener(mobileLeftBtn, 'ArrowLeft');
+        addControlListener(mobileRightBtn, 'ArrowRight');
+        addControlListener(mobileUpBtn, 'ArrowUp'); 
+    }
+    setupMobileControls();
 
     // --- INITIALIZATION ---
     function init() {

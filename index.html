@@ -2,38 +2,59 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <!-- REQUIRED METADATA FOR MOBILE -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Planck.js Platformer</title>
     <link rel="stylesheet" href="style.css">
     <!-- Load Planck.js from a CDN -->
     <script src="https://cdn.jsdelivr.net/npm/planck-js@0.3.31/dist/planck.js"></script>
 </head>
 <body>
+    <!-- TOGGLE BUTTON -->
+    <button id="mobile-btn">📱 Fullscreen / Mobile</button>
+
+    <!-- GAME CONTAINER -->
     <div id="game-container">
-        <div id="hud">
-            <div class="player-hud">
-                <span>P1 SCORE</span>
-                <span id="p1-score">000000</span>
-                <span>COINS</span>
-                <span id="p1-coins">00</span>
-                <span>LIVES</span>
-                <span id="p1-lives">3</span>
+        <!-- FIXED RESOLUTION SCREEN -->
+        <div id="screen">
+            <div id="hud">
+                <div class="player-hud">
+                    <span>P1 SCORE</span>
+                    <span id="p1-score">000000</span>
+                    <span>COINS</span>
+                    <span id="p1-coins">00</span>
+                    <span>LIVES</span>
+                    <span id="p1-lives">3</span>
+                </div>
+                <div class="timer-hud">
+                    <span>TIME</span>
+                    <span id="timer">400</span>
+                </div>
+                <div class="player-hud">
+                    <span>P2 SCORE</span>
+                    <span id="p2-score">000000</span>
+                    <span>COINS</span>
+                    <span id="p2-coins">00</span>
+                    <span>LIVES</span>
+                    <span id="p2-lives">3</span>
+                </div>
             </div>
-            <div class="timer-hud">
-                <span>TIME</span>
-                <span id="timer">400</span>
-            </div>
-            <div class="player-hud">
-                <span>P2 SCORE</span>
-                <span id="p2-score">000000</span>
-                <span>COINS</span>
-                <span id="p2-coins">00</span>
-                <span>LIVES</span>
-                <span id="p2-lives">3</span>
-            </div>
+            <!-- GAME CANVAS -->
+            <canvas id="gameCanvas"></canvas>
         </div>
-        <canvas id="gameCanvas"></canvas>
     </div>
+
+    <!-- MOBILE TOUCH CONTROLS OVERLAY -->
+    <div id="mobile-controls">
+        <div id="mobile-dpad">
+            <button id="mobile-left" class="mobile-control-btn">◀</button>
+            <button id="mobile-right" class="mobile-control-btn">▶</button>
+        </div>
+        <div id="mobile-action">
+            <button id="mobile-up" class="mobile-control-btn">▲</button>
+        </div>
+    </div>
+
     <script src="script.js"></script>
 </body>
 </html>
