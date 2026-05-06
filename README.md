@@ -5,6 +5,8 @@
 A browser-based 2D platformer built using **Planck.js** physics engine.  
 Features classic platformer mechanics, 2-player support, and an infinite procedural mode.
 
+## Play it now: https://pemmyz.github.io/js_platformer/
+
 ---
 
 ## 🚀 Features
