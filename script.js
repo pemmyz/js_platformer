@@ -39,6 +39,93 @@
     window.addEventListener('keydown', (e) => keys[e.code] = true);
     window.addEventListener('keyup', (e) => keys[e.code] = false);
 
+    // ==========================================
+    // --- GAMEPAD STATE & LOGIC ---
+    // ==========================================
+    let player1GamepadIndex = null;
+    let player2GamepadIndex = null;
+    const gamepadAssignmentCooldown = {};
+    const FACE_BUTTON_INDICES = [0, 1, 2, 3]; // A, B, X, Y (standard layout)
+    const DEADZONE = 0.2; // Deadzone for left analog stick
+
+    function pollGamepads() {
+        const pads = navigator.getGamepads();
+        if (!pads) return;
+
+        // Reset virtual gamepad keys each frame
+        keys['gp_p1_left'] = false;
+        keys['gp_p1_right'] = false;
+        keys['gp_p1_jump'] = false;
+        keys['gp_p2_left'] = false;
+        keys['gp_p2_right'] = false;
+        keys['gp_p2_jump'] = false;
+
+        // --- Step 1: Assignment Logic ---
+        for (let i = 0; i < pads.length; i++) {
+            const pad = pads[i];
+            if (!pad || gamepadAssignmentCooldown[i]) continue;
+
+            const isAssigned = (player1GamepadIndex === i || player2GamepadIndex === i);
+            if (isAssigned) continue;
+
+            const faceButtonPressed = FACE_BUTTON_INDICES.some(index => pad.buttons[index]?.pressed);
+            if (faceButtonPressed) {
+                if (player1GamepadIndex === null) {
+                    player1GamepadIndex = i;
+                    console.log(`Gamepad ${i} (${pad.id}) assigned to Player 1.`);
+                } else if (player2GamepadIndex === null) {
+                    player2GamepadIndex = i;
+                    console.log(`Gamepad ${i} (${pad.id}) assigned to Player 2.`);
+                }
+                // Cooldown to prevent double assignment on a single press
+                gamepadAssignmentCooldown[i] = true;
+                setTimeout(() => delete gamepadAssignmentCooldown[i], 1000);
+            }
+        }
+        
+        // --- Step 2: Player 1 Input ---
+        if (player1GamepadIndex !== null) {
+            const pad = pads[player1GamepadIndex];
+            if (!pad) { player1GamepadIndex = null; } // Disconnected
+            else {
+                // Move Left: D-Pad Left (14) OR Left Stick X Axis < -0.2
+                keys['gp_p1_left'] = pad.buttons[14]?.pressed || (pad.axes[0] < -DEADZONE);
+                // Move Right: D-Pad Right (15) OR Left Stick X Axis > 0.2
+                keys['gp_p1_right'] = pad.buttons[15]?.pressed || (pad.axes[0] > DEADZONE);
+                // Jump: Any Face Button (A, B, X, Y)
+                keys['gp_p1_jump'] = FACE_BUTTON_INDICES.some(index => pad.buttons[index]?.pressed);
+            }
+        }
+
+        // --- Step 3: Player 2 Input ---
+        if (player2GamepadIndex !== null) {
+            const pad = pads[player2GamepadIndex];
+            if (!pad) { player2GamepadIndex = null; } // Disconnected
+            else {
+                keys['gp_p2_left'] = pad.buttons[14]?.pressed || (pad.axes[0] < -DEADZONE);
+                keys['gp_p2_right'] = pad.buttons[15]?.pressed || (pad.axes[0] > DEADZONE);
+                keys['gp_p2_jump'] = FACE_BUTTON_INDICES.some(index => pad.buttons[index]?.pressed);
+            }
+        }
+    }
+
+    // --- GAMEPAD CONNECTION LISTENERS ---
+    window.addEventListener("gamepadconnected", (e) => {
+        console.log(`Gamepad connected at index ${e.gamepad.index}: ${e.gamepad.id}. Press a face button to assign.`);
+    });
+    window.addEventListener("gamepaddisconnected", (e) => {
+        console.log(`Gamepad disconnected from index ${e.gamepad.index}: ${e.gamepad.id}.`);
+        if (player1GamepadIndex === e.gamepad.index) {
+            console.log("Player 1 gamepad disconnected.");
+            player1GamepadIndex = null;
+        }
+        if (player2GamepadIndex === e.gamepad.index) {
+            console.log("Player 2 gamepad disconnected.");
+            player2GamepadIndex = null;
+        }
+    });
+    // ==========================================
+
     // --- UTILITY FUNCTIONS ---
     const m2p = (m) => m * PPM;
     const p2m = (p) => p / PPM;
@@ -96,17 +183,14 @@
             const startCol = maxGeneratedCol;
             const endCol = startCol + 40; // Generate 40 tiles wide at a time
             
-            // ------------------------------------------------
             // PASS 1: GROUND & PITS
-            // ------------------------------------------------
             let c = startCol;
             while (c < endCol) {
-                // First 15 blocks of the game are safe, then 12% pit chance
                 let isPit = (c > 15) && (Math.random() < 0.12); 
-                let pitWidth = isPit ? Math.floor(Math.random() * 3) + 2 : 0; // 2 to 4 blocks wide pit
+                let pitWidth = isPit ? Math.floor(Math.random() * 3) + 2 : 0;
 
                 if (isPit) {
-                    c += pitWidth; // Skip ground generation to create a pit
+                    c += pitWidth;
                 } else {
                     let x = c * p2m(32) + p2m(16);
                     let bG = new Block(world, x, p2m(48), 'ground'); 
@@ -115,33 +199,23 @@
                     let bS = new Block(world, x, p2m(16), 'solid'); 
                     bS.body.setStatic(); bS.body.setUserData({type: 'ground', block: bS}); blocks.push(bS);
                     
-                    // Sometimes spawn an enemy on the ground
-                    if (Math.random() < 0.05) {
-                        enemies.push(new Enemy(world, x, p2m(80)));
-                    }
+                    if (Math.random() < 0.05) enemies.push(new Enemy(world, x, p2m(80)));
                     c++;
                 }
             }
 
-            // ------------------------------------------------
             // PASS 2: PLATFORMS AT VARIOUS HEIGHTS
-            // ------------------------------------------------
-            let pCol = startCol + Math.floor(Math.random() * 5) + 3; // Start a bit into the chunk
+            let pCol = startCol + Math.floor(Math.random() * 5) + 3; 
             
             while (pCol < endCol) {
-                // Shift height gradually so it's always reachable (-3 to +3 blocks from last platform)
                 let yShift = (Math.floor(Math.random() * 7) - 3) * p2m(32); 
                 let newY = this.lastPlatY + yShift;
-                
-                // Clamp platform heights: 
-                // Min 112px (above ground), Max 350px (near top of screen)
                 newY = Math.max(p2m(112), Math.min(newY, p2m(350)));
                 this.lastPlatY = newY;
 
-                const platWidth = Math.floor(Math.random() * 4) + 3; // 3 to 6 blocks wide
-                let hasEnemy = Math.random() < 0.4; // 40% chance of an enemy per platform
+                const platWidth = Math.floor(Math.random() * 4) + 3;
+                let hasEnemy = Math.random() < 0.4;
 
-                // Create main platform
                 for (let j = 0; j < platWidth; j++) {
                     let platX = (pCol + j) * p2m(32) + p2m(16);
                     let platType = (Math.random() < 0.25) ? 'question' : 'brick';
@@ -149,46 +223,35 @@
                     let bP = new Block(world, platX, newY, platType);
                     bP.body.setStatic(); bP.body.setUserData({type: 'block', block: bP}); blocks.push(bP);
 
-                    // Place enemy in the center
                     if (hasEnemy && j === Math.floor(platWidth / 2)) {
                         enemies.push(new Enemy(world, platX, newY + p2m(32)));
                         hasEnemy = false;
                     }
                 }
 
-                // Occasional Secondary Stacked Platform (Higher or Lower)
                 if (Math.random() < 0.45) {
-                    // 3 blocks above or 3 blocks below the main platform
                     let secondaryY = newY + (Math.random() > 0.5 ? p2m(96) : -p2m(96));
-                    
                     if (secondaryY >= p2m(112) && secondaryY <= p2m(350)) {
-                        let secWidth = Math.max(1, platWidth - 2); // Slightly smaller
+                        let secWidth = Math.max(1, platWidth - 2);
                         let offset = Math.floor(Math.random() * 2);
-                        
                         for (let j = 0; j < secWidth; j++) {
                             let secX = (pCol + offset + j) * p2m(32) + p2m(16);
                             let secType = (Math.random() < 0.3) ? 'question' : 'brick';
-                            
                             let bP = new Block(world, secX, secondaryY, secType);
                             bP.body.setStatic(); bP.body.setUserData({type: 'block', block: bP}); blocks.push(bP);
                         }
                     }
                 }
-
-                // Advance platform cursor (leave gap before next platform)
-                let gap = Math.floor(Math.random() * 4) + 2; // 2 to 5 block horizontal gap
+                let gap = Math.floor(Math.random() * 4) + 2;
                 pCol += platWidth + gap;
             }
-
             maxGeneratedCol = endCol;
-            gameTime += 20; // Add time for completing chunks so player doesn't run out
+            gameTime += 20;
         }
     };
 
     function cleanupWorld() {
-        // Destroy objects that have fallen too far behind the camera
         const leftBound = p2m(camera.x - 600); 
-        
         blocks = blocks.filter(b => {
             if (b.body.getPosition().x < leftBound) { world.destroyBody(b.body); return false; }
             return true;
@@ -256,14 +319,14 @@
         update(dt) {
             this.jumpCooldown = Math.max(0, this.jumpCooldown - dt);
             
-            if (this.playerNumber === 1) { // Player 1 Controls (Arrows)
-                if (keys['ArrowLeft']) this.body.applyForceToCenter(Vec2(-MOVE_FORCE, 0), true);
-                if (keys['ArrowRight']) this.body.applyForceToCenter(Vec2(MOVE_FORCE, 0), true);
-                if (keys['ArrowUp']) this.tryJump();
-            } else if (this.playerNumber === 2) { // Player 2 Controls (WASD)
-                if (keys['KeyA']) this.body.applyForceToCenter(Vec2(-MOVE_FORCE, 0), true);
-                if (keys['KeyD']) this.body.applyForceToCenter(Vec2(MOVE_FORCE, 0), true);
-                if (keys['KeyW']) this.tryJump();
+            if (this.playerNumber === 1) { // Player 1 Controls (Keyboard + Gamepad)
+                if (keys['ArrowLeft'] || keys['gp_p1_left']) this.body.applyForceToCenter(Vec2(-MOVE_FORCE, 0), true);
+                if (keys['ArrowRight'] || keys['gp_p1_right']) this.body.applyForceToCenter(Vec2(MOVE_FORCE, 0), true);
+                if (keys['ArrowUp'] || keys['gp_p1_jump']) this.tryJump();
+            } else if (this.playerNumber === 2) { // Player 2 Controls (Keyboard + Gamepad)
+                if (keys['KeyA'] || keys['gp_p2_left']) this.body.applyForceToCenter(Vec2(-MOVE_FORCE, 0), true);
+                if (keys['KeyD'] || keys['gp_p2_right']) this.body.applyForceToCenter(Vec2(MOVE_FORCE, 0), true);
+                if (keys['KeyW'] || keys['gp_p2_jump']) this.tryJump();
             }
              
             const vel = this.body.getLinearVelocity();
@@ -272,7 +335,6 @@
                 this.body.setLinearVelocity(vel);
             }
             
-            // Pit death recovery
             if (this.body.getPosition().y < -1) {
                 this.die();
             }
@@ -290,10 +352,8 @@
             this.lives--;
             if (this.lives <= 0) {
                 console.log(`Player ${this.playerNumber} is out of lives!`);
-                // Move offscreen temporarily or handle game over
                 this.body.setPosition(Vec2(-100, 5));
             } else {
-                // Respawn slightly ahead of camera view so they don't get stuck behind
                 const respawnX = p2m(camera.x + camera.width / 2);
                 this.body.setPosition(Vec2(respawnX, 12)); 
                 this.body.setLinearVelocity(Vec2(0,0));
@@ -327,7 +387,6 @@
             world.queryAABB(pl.AABB(Vec2(probeX, probeY), Vec2(probeX, probeY)), (fixture) => { const userData = fixture.getBody().getUserData(); if (userData && (userData.type === 'ground' || userData.type === 'block')) groundAhead = true; return true; });
             if (!groundAhead) this.direction *= -1;
             
-            // Destroy if falls into pit
             if (this.body.getPosition().y < -1) {
                 world.destroyBody(this.body); enemies = enemies.filter(e => e !== this);
             }
@@ -394,6 +453,10 @@
     function gameLoop(currentTime) { 
         if (gameOver) return; 
         requestAnimationFrame(gameLoop); 
+        
+        // Process gamepad states prior to physics update
+        pollGamepads();
+
         const dt = (currentTime - lastTime) / 1000; 
         lastTime = currentTime; 
         gameTime = Math.max(0, gameTime - dt); 
@@ -402,9 +465,7 @@
         enemies.forEach(e => e.update(dt)); 
         camera.update(); 
         
-        // Procedural Trigger & Cleanup
         if (isProceduralMode) {
-            // Generate more when player reaches near end of chunk memory
             if (camera.x + camera.width + 600 > maxGeneratedCol * 32) {
                 ChunkGenerator.generateProceduralChunk();
                 cleanupWorld();
@@ -444,10 +505,10 @@
         } else {
             isProceduralMode = true;
             maxGeneratedCol = 0;
-            gameTime = 100; // Reset starting time for procedural map
-            ChunkGenerator.lastPlatY = p2m(96); // Reset height cursor
+            gameTime = 100;
+            ChunkGenerator.lastPlatY = p2m(96);
             ChunkGenerator.generateProceduralChunk();
-            ChunkGenerator.generateProceduralChunk(); // Pad initial distance
+            ChunkGenerator.generateProceduralChunk();
         }
 
         players.push(new Player(world, 4, 10, 1));
@@ -495,7 +556,6 @@
             const baseWidth = 800;
             const baseHeight = 450;
             
-            // Calculate scale to fit window while keeping aspect ratio perfect
             const scale = Math.min(
                 window.innerWidth / baseWidth,
                 window.innerHeight / baseHeight
@@ -526,7 +586,6 @@
     function setupMobileControls() {
         if (!mobileControls) return;
         
-        // Maps touch buttons directly into the primary keyboard listener keys list
         const addControlListener = (element, key) => {
             if(!element) return;
             const pressKey = (e) => {
@@ -542,7 +601,6 @@
             element.addEventListener('touchend', releaseKey, { passive: false });
             element.addEventListener('touchcancel', releaseKey, { passive: false });
             
-            // Allow clicking with mouse for easy desktop testing
             element.addEventListener('mousedown', pressKey);
             element.addEventListener('mouseup', releaseKey);
             element.addEventListener('mouseleave', (e) => {
@@ -550,7 +608,6 @@
             });
         };
 
-        // Mapped to Player 1 Arrow Controls
         addControlListener(mobileLeftBtn, 'ArrowLeft');
         addControlListener(mobileRightBtn, 'ArrowRight');
         addControlListener(mobileUpBtn, 'ArrowUp'); 
