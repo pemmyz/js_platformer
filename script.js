@@ -290,43 +290,127 @@
             this.score = 0;
             this.coins = 0;
             this.lives = 3;
-            this.isBig = false;
         }
 
-        isGrounded() {
+        getStandingOn() {
             const pos = this.body.getPosition();
             const groundRayStart = Vec2(pos.x, pos.y);
-            const groundRayEnd = Vec2(pos.x, pos.y - this.height / 2 - p2m(1));
-            let isGrounded = false;
+            // Raycast deeper to reliably detect contact with another player
+            const groundRayEnd = Vec2(pos.x, pos.y - this.height / 2 - p2m(3));
+            let standingOnBody = null;
+            
             world.rayCast(groundRayStart, groundRayEnd, (fixture) => {
-                const userData = fixture.getBody().getUserData();
-                if (userData && (userData.type === 'ground' || userData.type === 'block')) {
-                    isGrounded = true;
-                    return 0;
+                const body = fixture.getBody();
+                const userData = body.getUserData();
+                if (userData && (userData.type === 'ground' || userData.type === 'block' || userData.type === 'player')) {
+                    // Prevent detecting ourselves
+                    if (userData.player !== this) {
+                        standingOnBody = body;
+                        return 0; // stop raycast, closest hit found
+                    }
                 }
                 return -1;
             });
-            return isGrounded;
+            return standingOnBody;
+        }
+
+        isGrounded() {
+            return this.getStandingOn() !== null;
         }
 
         tryJump() {
             if (this.isGrounded() && this.jumpCooldown === 0) {
+                
+                // Apply jump to self
+                const vel = this.body.getLinearVelocity();
+                this.body.setLinearVelocity(Vec2(vel.x, 0)); // Reset Y vel before jumping to ensure consistent jump heights
                 this.body.applyLinearImpulse(Vec2(0, JUMP_IMPULSE), this.body.getWorldCenter(), true);
                 this.jumpCooldown = 0.2;
+
+                // Propagate the jump perfectly up the stack so top blocks don't separate or bounce higher
+                let currentCarrier = this;
+                let foundTop = true;
+                
+                while (foundTop) {
+                    foundTop = false;
+                    for (let p of players) {
+                        if (p === currentCarrier) continue;
+                        
+                        const standingOnBody = p.getStandingOn();
+                        if (standingOnBody && standingOnBody.getUserData() && standingOnBody.getUserData().player === currentCarrier) {
+                            
+                            // Propagate exact jump impulse and reset their velocity to match
+                            const pVel = p.body.getLinearVelocity();
+                            p.body.setLinearVelocity(Vec2(pVel.x, 0)); 
+                            p.body.applyLinearImpulse(Vec2(0, JUMP_IMPULSE), p.body.getWorldCenter(), true);
+                            
+                            currentCarrier = p; // Continue searching up the stack
+                            foundTop = true;
+                            break;
+                        }
+                    }
+                }
             }
         }
 
         update(dt) {
             this.jumpCooldown = Math.max(0, this.jumpCooldown - dt);
             
-            if (this.playerNumber === 1) { // Player 1 Controls (Keyboard + Gamepad)
-                if (keys['ArrowLeft'] || keys['gp_p1_left']) this.body.applyForceToCenter(Vec2(-MOVE_FORCE, 0), true);
-                if (keys['ArrowRight'] || keys['gp_p1_right']) this.body.applyForceToCenter(Vec2(MOVE_FORCE, 0), true);
-                if (keys['ArrowUp'] || keys['gp_p1_jump']) this.tryJump();
-            } else if (this.playerNumber === 2) { // Player 2 Controls (Keyboard + Gamepad)
-                if (keys['KeyA'] || keys['gp_p2_left']) this.body.applyForceToCenter(Vec2(-MOVE_FORCE, 0), true);
-                if (keys['KeyD'] || keys['gp_p2_right']) this.body.applyForceToCenter(Vec2(MOVE_FORCE, 0), true);
-                if (keys['KeyW'] || keys['gp_p2_jump']) this.tryJump();
+            let isMovingLeft = false;
+            let isMovingRight = false;
+            let isJumping = false;
+
+            if (this.playerNumber === 1) { 
+                if (keys['ArrowLeft'] || keys['gp_p1_left']) isMovingLeft = true;
+                if (keys['ArrowRight'] || keys['gp_p1_right']) isMovingRight = true;
+                if (keys['ArrowUp'] || keys['gp_p1_jump']) isJumping = true;
+            } else if (this.playerNumber === 2) { 
+                if (keys['KeyA'] || keys['gp_p2_left']) isMovingLeft = true;
+                if (keys['KeyD'] || keys['gp_p2_right']) isMovingRight = true;
+                if (keys['KeyW'] || keys['gp_p2_jump']) isJumping = true;
+            }
+
+            if (isMovingLeft) this.body.applyForceToCenter(Vec2(-MOVE_FORCE, 0), true);
+            if (isMovingRight) this.body.applyForceToCenter(Vec2(MOVE_FORCE, 0), true);
+            if (isJumping) this.tryJump();
+
+            const standingOnBody = this.getStandingOn();
+            const standingOnUserData = standingOnBody ? standingOnBody.getUserData() : null;
+
+            // --- PICO PARK STACKING MECHANICS ---
+            if (standingOnUserData && standingOnUserData.type === 'player') {
+                // Remove world damping so the carried player doesn't resist movement
+                this.body.setLinearDamping(0);
+                
+                const carrierVel = standingOnBody.getLinearVelocity();
+                const myVel = this.body.getLinearVelocity();
+                
+                let targetVx = myVel.x;
+                // Lock horizontal velocity to the carrier's velocity if not walking
+                if (!isMovingLeft && !isMovingRight) {
+                    targetVx = carrierVel.x;
+                }
+
+                let targetVy = myVel.y;
+                
+                // If not currently trying to jump off, strictly snap Y position and Y velocity
+                if (!isJumping && this.jumpCooldown <= 0) {
+                    targetVy = carrierVel.y;
+
+                    const carrierPos = standingOnBody.getPosition();
+                    const targetY = carrierPos.y + p2m(28); // Snapped exactly one player height above
+                    const currentPos = this.body.getPosition();
+                    
+                    // If we are relatively close, hard snap position to prevent bouncing collision artifacts
+                    if (Math.abs(currentPos.y - targetY) < p2m(12)) {
+                        this.body.setPosition(Vec2(currentPos.x, targetY));
+                    }
+                }
+
+                this.body.setLinearVelocity(Vec2(targetVx, targetVy));
+            } else {
+                // Restore normal damping when not stacked
+                this.body.setLinearDamping(PLAYER_DAMPING);
             }
              
             const vel = this.body.getLinearVelocity();
@@ -440,6 +524,33 @@
     
     // --- COLLISION HANDLING ---
     world.on('begin-contact', (contact) => handleContact(contact.getFixtureA(), contact.getFixtureB(), true));
+    
+    // PRE-SOLVE EVENT LISTENER (PICO PARK Friction Dynamics)
+    world.on('pre-solve', (contact) => {
+        const fixA = contact.getFixtureA();
+        const fixB = contact.getFixtureB();
+        const dataA = fixA.getBody().getUserData() || {};
+        const dataB = fixB.getBody().getUserData() || {};
+
+        // Custom friction dynamics for player-to-player contacts
+        if (dataA.type === 'player' && dataB.type === 'player') {
+            const posA = fixA.getBody().getPosition();
+            const posB = fixB.getBody().getPosition();
+            
+            // Determine if collision is horizontal or vertical
+            const dy = Math.abs(posA.y - posB.y);
+            const dx = Math.abs(posA.x - posB.x);
+
+            if (dy > dx) {
+                // Stacking vertically: High friction to prevent slipping
+                contact.setFriction(5.0);
+            } else {
+                // Pushing side-by-side: Zero friction so they don't wall-cling to each other
+                contact.setFriction(0.0);
+            }
+        }
+    });
+
     function handleContact(fixtureA, fixtureB, isBeginning) {
         const dataA = fixtureA.getUserData() || {}; const dataB = fixtureB.getUserData() || {}; const pairs = [ { a: dataA, b: dataB }, { a: dataB, b: dataA } ];
         for (const pair of pairs) {
